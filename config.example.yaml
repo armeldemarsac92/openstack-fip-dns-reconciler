@@ -1,0 +1,32 @@
+openstack:
+  cloud: admin
+
+controller:
+  poll_interval_seconds: 15
+  dry_run: false
+
+dns:
+  base_domain: fip.internal.mycloud.net.
+  zone_strategy: single_zone
+  ttl: 60
+  label_length: 13
+  label_encoding: base32
+  project_id_label_mode: short
+  project_id_short_length: 8
+
+records:
+  create_txt_metadata: true
+  managed_by: openstack-fip-dns-reconciler
+  fqdn_template: "{random_label}.{project_id_label}.{base_domain}"
+
+neutron_metadata:
+  update_description: true
+  description_template: "Auto DNS: {fqdn}"
+  update_tags: true
+  tags:
+    - "auto-dns"
+    - "dns-label:{random_label}"
+    - "dns-project:{project_id_label}"
+
+cleanup:
+  delete_stale_records: true

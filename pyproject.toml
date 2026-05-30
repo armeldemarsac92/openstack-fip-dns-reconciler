@@ -22,7 +22,10 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Topic :: System :: Systems Administration",
 ]
-dependencies = []
+dependencies = [
+  "pydantic>=2.8",
+  "PyYAML>=6.0",
+]
 
 [project.optional-dependencies]
 dev = [
