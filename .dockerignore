@@ -1,0 +1,11 @@
+.git/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+AGENTS.md
+.agents/
+.codex/
+dist/
+build/
+*.egg-info/

@@ -1,0 +1,20 @@
+[Unit]
+Description=OpenStack Floating IP DNS Reconciler
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=openstack-fip-dns-reconciler
+Group=openstack-fip-dns-reconciler
+Environment=OS_CLIENT_CONFIG_FILE=/etc/openstack/clouds.yaml
+ExecStart=/usr/local/bin/openstack-fip-dns-reconciler --config /etc/openstack-fip-dns-reconciler/config.yaml
+Restart=always
+RestartSec=5s
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/openstack-fip-dns-reconciler
+
+[Install]
+WantedBy=multi-user.target
