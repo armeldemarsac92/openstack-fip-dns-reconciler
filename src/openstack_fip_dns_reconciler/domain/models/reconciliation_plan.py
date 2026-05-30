@@ -15,7 +15,9 @@ class ReconciliationPlan:
     records_to_create: tuple[GeneratedDnsRecord, ...] = field(default_factory=tuple)
     records_to_update: tuple[GeneratedDnsRecord, ...] = field(default_factory=tuple)
     records_to_delete: tuple[GeneratedDnsRecord, ...] = field(default_factory=tuple)
-    floating_ip_metadata_updates: tuple[FloatingIpMetadataUpdate, ...] = field(default_factory=tuple)
+    floating_ip_metadata_updates: tuple[FloatingIpMetadataUpdate, ...] = field(
+        default_factory=tuple
+    )
 
     @property
     def is_empty(self) -> bool:

@@ -1,7 +1,7 @@
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 from openstack_fip_dns_reconciler.application.ports.dns_record_repository import (
     DnsRecordRepository,

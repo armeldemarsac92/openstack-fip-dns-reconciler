@@ -23,16 +23,10 @@ from openstack_fip_dns_reconciler.domain.services.reconciliation_planner import 
     ReconciliationPlanningOptions,
 )
 from openstack_fip_dns_reconciler.endpoints.worker import ReconcilerWorker
-from openstack_fip_dns_reconciler.infrastructure.openstack.connection_factory import (
+from openstack_fip_dns_reconciler.infrastructure.openstack import (
     OpenStackConnectionFactory,
-)
-from openstack_fip_dns_reconciler.infrastructure.openstack.designate_dns_record_repository import (
     OpenStackDesignateRecordRepository,
-)
-from openstack_fip_dns_reconciler.infrastructure.openstack.neutron_floating_ip_metadata_repository import (
     OpenStackFloatingIpMetadataRepository,
-)
-from openstack_fip_dns_reconciler.infrastructure.openstack.neutron_floating_ip_repository import (
     OpenStackFloatingIpRepository,
 )
 from openstack_fip_dns_reconciler.observability.logging_config import configure_logging
@@ -115,8 +109,16 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         type=str,
         help="Path to YAML configuration file.",
     )
-    parser.add_argument("--once", action="store_true", help="Run one reconciliation pass and exit.")
-    parser.add_argument("--dry-run", action="store_true", help="Log intended writes without applying them.")
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Run one reconciliation pass and exit.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Log intended writes without applying them.",
+    )
     parser.add_argument("--log-level", default="INFO", help="Python logging level.")
     return parser.parse_args(argv)
 

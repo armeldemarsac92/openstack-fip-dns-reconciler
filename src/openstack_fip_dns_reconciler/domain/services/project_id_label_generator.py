@@ -28,7 +28,9 @@ class ProjectIdLabelCollisionError(DomainError):
 
 
 class ProjectIdLabelGenerator:
-    def __init__(self, mode: ProjectIdLabelMode = ProjectIdLabelMode.SHORT, short_length: int = 8) -> None:
+    def __init__(
+        self, mode: ProjectIdLabelMode = ProjectIdLabelMode.SHORT, short_length: int = 8
+    ) -> None:
         if not 1 <= short_length <= 63:
             raise ValueError("short_length must be between 1 and 63")
         self._mode = mode

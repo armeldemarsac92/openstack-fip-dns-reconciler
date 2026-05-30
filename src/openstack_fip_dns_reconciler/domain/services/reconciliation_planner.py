@@ -7,11 +7,11 @@ from openstack_fip_dns_reconciler.domain.models.dns_record import (
     GeneratedDnsRecord,
 )
 from openstack_fip_dns_reconciler.domain.models.floating_ip import FloatingIp
-from openstack_fip_dns_reconciler.domain.models.record_ownership import RecordOwnership
 from openstack_fip_dns_reconciler.domain.models.reconciliation_plan import (
     FloatingIpMetadataUpdate,
     ReconciliationPlan,
 )
+from openstack_fip_dns_reconciler.domain.models.record_ownership import RecordOwnership
 from openstack_fip_dns_reconciler.domain.services.dns_label_generator import DnsLabelGenerator
 from openstack_fip_dns_reconciler.domain.services.fqdn_builder import FqdnBuilder
 from openstack_fip_dns_reconciler.domain.services.ownership_parser import OwnershipParser
@@ -228,7 +228,9 @@ class ReconciliationPlanner:
             if floating_ip.description != wanted_description:
                 description = wanted_description
         if self._options.update_tags:
-            rendered_tags = tuple(template.format(**render_values) for template in self._options.tag_templates)
+            rendered_tags = tuple(
+                template.format(**render_values) for template in self._options.tag_templates
+            )
             missing_tags = tuple(tag for tag in rendered_tags if tag not in floating_ip.tags)
             if missing_tags:
                 tags = rendered_tags

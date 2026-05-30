@@ -24,7 +24,9 @@ class OpenStackFloatingIpRepository:
 
     def _to_domain(self, resource: Any) -> FloatingIp:
         resource_id = _resource_value(resource, "id")
-        project_id = _resource_value(resource, "project_id") or _resource_value(resource, "tenant_id")
+        project_id = _resource_value(resource, "project_id") or _resource_value(
+            resource, "tenant_id"
+        )
         address = _resource_value(resource, "floating_ip_address")
         if not resource_id or not project_id or not address:
             raise InfrastructureError("Floating IP resource is missing required fields")

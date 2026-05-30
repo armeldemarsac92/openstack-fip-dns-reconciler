@@ -18,7 +18,7 @@ def test_ownership_parser_round_trips_metadata() -> None:
 def test_ownership_parser_ignores_other_managers() -> None:
     parser = OwnershipParser("openstack-fip-dns-reconciler")
 
-    parsed = parser.parse('managed-by=someone-else fip_id=2c4f project_id=project')
+    parsed = parser.parse("managed-by=someone-else fip_id=2c4f project_id=project")
 
     assert parsed is None
 

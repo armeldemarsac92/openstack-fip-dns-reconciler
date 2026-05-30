@@ -18,8 +18,4 @@ class RecordOwnership:
             raise DomainError("project_id must not be empty")
 
     def to_txt_value(self) -> str:
-        return (
-            f"managed-by={self.managed_by} "
-            f"fip_id={self.fip_id} "
-            f"project_id={self.project_id}"
-        )
+        return f"managed-by={self.managed_by} fip_id={self.fip_id} project_id={self.project_id}"

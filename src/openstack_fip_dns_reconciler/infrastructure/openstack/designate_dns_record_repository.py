@@ -132,7 +132,9 @@ class OpenStackDesignateRecordRepository:
             zone_name=zone_name,
             ttl=int(_resource_value(recordset, "ttl") or 300),
             project_id=project_id,
-            ownership=self._ownership_parser.parse(str(_resource_value(recordset, "description") or "")),
+            ownership=self._ownership_parser.parse(
+                str(_resource_value(recordset, "description") or "")
+            ),
         )
 
     def _ownership_for(self, record: GeneratedDnsRecord) -> RecordOwnership | None:
