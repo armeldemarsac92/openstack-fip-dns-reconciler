@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "openstack-fip-dns-reconciler"
+version = "0.1.0"
+description = "Reconcile OpenStack Neutron floating IPs into Designate DNS recordsets."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "Armel De Marsac" },
+]
+keywords = ["openstack", "neutron", "designate", "dns", "kolla-ansible"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: System Administrators",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: System :: Systems Administration",
+]
+dependencies = []
+
+[project.scripts]
+openstack-fip-dns-reconciler = "openstack_fip_dns_reconciler.endpoints.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openstack_fip_dns_reconciler"]
