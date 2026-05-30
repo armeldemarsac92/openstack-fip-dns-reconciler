@@ -1,0 +1,211 @@
+import logging
+from typing import Any
+
+from openstack_fip_dns_reconciler.domain.models.dns_name import DnsZoneName
+from openstack_fip_dns_reconciler.domain.models.dns_record import DnsRecordType, GeneratedDnsRecord
+from openstack_fip_dns_reconciler.domain.models.record_ownership import RecordOwnership
+from openstack_fip_dns_reconciler.domain.services.fqdn_builder import ZoneStrategy
+from openstack_fip_dns_reconciler.domain.services.ownership_parser import OwnershipParser
+from openstack_fip_dns_reconciler.infrastructure.exceptions import InfrastructureError
+
+LOG = logging.getLogger(__name__)
+
+
+class OpenStackDesignateRecordRepository:
+    def __init__(
+        self,
+        connection: Any,
+        base_domain: str,
+        zone_strategy: ZoneStrategy,
+        ownership_parser: OwnershipParser,
+    ) -> None:
+        self._connection = connection
+        self._base_domain = DnsZoneName(base_domain)
+        self._zone_strategy = zone_strategy
+        self._ownership_parser = ownership_parser
+
+    def list_managed_records(self) -> list[GeneratedDnsRecord]:
+        try:
+            records = self._list_managed_records()
+        except Exception as exc:
+            LOG.exception("Failed to list managed Designate records")
+            raise InfrastructureError("Failed to list managed Designate records") from exc
+        LOG.info("Discovered managed DNS records", extra={"record_count": len(records)})
+        return records
+
+    def create_record(self, record: GeneratedDnsRecord) -> None:
+        try:
+            zone = self._find_required_zone(record.zone_name.value)
+            existing = self._find_recordset(zone, record)
+            if existing is not None:
+                self._update_existing_recordset(existing, record)
+            else:
+                self._connection.dns.create_recordset(zone, **self._recordset_attrs(record))
+        except Exception as exc:
+            LOG.exception("Failed to create Designate record", extra=_record_log_extra(record))
+            raise InfrastructureError("Failed to create Designate record") from exc
+        LOG.info("Created DNS record", extra=_record_log_extra(record))
+
+    def update_record(self, record: GeneratedDnsRecord) -> None:
+        try:
+            zone = self._find_required_zone(record.zone_name.value)
+            existing = self._find_recordset(zone, record)
+            if existing is None:
+                self._connection.dns.create_recordset(zone, **self._recordset_attrs(record))
+            else:
+                self._update_existing_recordset(existing, record)
+        except Exception as exc:
+            LOG.exception("Failed to update Designate record", extra=_record_log_extra(record))
+            raise InfrastructureError("Failed to update Designate record") from exc
+        LOG.info("Updated DNS record", extra=_record_log_extra(record))
+
+    def delete_record(self, record: GeneratedDnsRecord) -> None:
+        try:
+            zone = self._find_required_zone(record.zone_name.value)
+            existing = self._find_recordset(zone, record)
+            if existing is not None:
+                self._connection.dns.delete_recordset(existing, zone, ignore_missing=True)
+        except Exception as exc:
+            LOG.exception("Failed to delete Designate record", extra=_record_log_extra(record))
+            raise InfrastructureError("Failed to delete Designate record") from exc
+        LOG.info("Deleted DNS record", extra=_record_log_extra(record))
+
+    def _list_managed_records(self) -> list[GeneratedDnsRecord]:
+        managed_records: list[GeneratedDnsRecord] = []
+        for zone in self._managed_zones():
+            zone_name = DnsZoneName(str(_resource_value(zone, "name")))
+            zone_id = _resource_value(zone, "id")
+            recordsets = [
+                record
+                for recordset in self._connection.dns.recordsets(zone_id)
+                if (record := self._to_domain(recordset, zone_name)) is not None
+            ]
+            a_records_by_fqdn = {
+                record.fqdn: record
+                for record in recordsets
+                if record.record_type == DnsRecordType.A
+            }
+            for record in recordsets:
+                if record.record_type != DnsRecordType.TXT:
+                    continue
+                ownership = self._ownership_for(record)
+                if ownership is None:
+                    continue
+                txt_record = self._with_ownership(record, ownership)
+                managed_records.append(txt_record)
+                a_record = a_records_by_fqdn.get(record.fqdn)
+                if a_record is not None:
+                    managed_records.append(self._with_ownership(a_record, ownership))
+        return managed_records
+
+    def _managed_zones(self) -> list[Any]:
+        zones = list(self._connection.dns.zones())
+        if self._zone_strategy == ZoneStrategy.SINGLE_ZONE:
+            return [
+                zone
+                for zone in zones
+                if _normalize_name(_resource_value(zone, "name")) == self._base_domain.value
+            ]
+        suffix = f".{self._base_domain.value}"
+        return [
+            zone
+            for zone in zones
+            if _normalize_name(_resource_value(zone, "name")).endswith(suffix)
+        ]
+
+    def _to_domain(self, recordset: Any, zone_name: DnsZoneName) -> GeneratedDnsRecord | None:
+        raw_record_type = str(_resource_value(recordset, "type")).upper()
+        if raw_record_type not in {DnsRecordType.A.value, DnsRecordType.TXT.value}:
+            return None
+        record_type = DnsRecordType(raw_record_type)
+        records = tuple(str(value) for value in (_resource_value(recordset, "records") or ()))
+        project_id = str(_resource_value(recordset, "project_id") or "")
+        return GeneratedDnsRecord(
+            fqdn=_normalize_name(_resource_value(recordset, "name")),
+            record_type=record_type,
+            records=records,
+            zone_name=zone_name,
+            ttl=int(_resource_value(recordset, "ttl") or 300),
+            project_id=project_id,
+        )
+
+    def _ownership_for(self, record: GeneratedDnsRecord) -> RecordOwnership | None:
+        for value in record.records:
+            ownership = self._ownership_parser.parse(value)
+            if ownership is not None:
+                return ownership
+        return None
+
+    def _with_ownership(
+        self,
+        record: GeneratedDnsRecord,
+        ownership: RecordOwnership,
+    ) -> GeneratedDnsRecord:
+        return GeneratedDnsRecord(
+            fqdn=record.fqdn,
+            record_type=record.record_type,
+            records=record.records,
+            zone_name=record.zone_name,
+            ttl=record.ttl,
+            project_id=ownership.project_id,
+            ownership=ownership,
+        )
+
+    def _find_required_zone(self, zone_name: str) -> Any:
+        zone = self._connection.dns.find_zone(zone_name)
+        if zone is None:
+            raise InfrastructureError(f"Designate zone not found: {zone_name}")
+        return zone
+
+    def _find_recordset(self, zone: Any, record: GeneratedDnsRecord) -> Any | None:
+        for existing in self._connection.dns.recordsets(
+            _resource_value(zone, "id"),
+            name=record.fqdn,
+            type=record.record_type.value,
+        ):
+            if (
+                _normalize_name(_resource_value(existing, "name")) == record.fqdn
+                and str(_resource_value(existing, "type")).upper() == record.record_type.value
+            ):
+                return existing
+        return None
+
+    def _update_existing_recordset(self, existing: Any, record: GeneratedDnsRecord) -> None:
+        self._connection.dns.update_recordset(existing, **self._recordset_update_attrs(record))
+
+    def _recordset_attrs(self, record: GeneratedDnsRecord) -> dict[str, Any]:
+        return {
+            "name": record.fqdn,
+            "type": record.record_type.value,
+            "records": list(record.records),
+            "ttl": record.ttl,
+            "description": "Managed by openstack-fip-dns-reconciler",
+        }
+
+    def _recordset_update_attrs(self, record: GeneratedDnsRecord) -> dict[str, Any]:
+        return {
+            "records": list(record.records),
+            "ttl": record.ttl,
+            "description": "Managed by openstack-fip-dns-reconciler",
+        }
+
+
+def _resource_value(resource: Any, name: str) -> Any:
+    if isinstance(resource, dict):
+        return resource.get(name)
+    return getattr(resource, name, None)
+
+
+def _normalize_name(value: Any) -> str:
+    normalized = str(value).strip().lower()
+    return normalized if normalized.endswith(".") else f"{normalized}."
+
+
+def _record_log_extra(record: GeneratedDnsRecord) -> dict[str, Any]:
+    return {
+        "fqdn": record.fqdn,
+        "record_type": record.record_type.value,
+        "zone_name": record.zone_name.value,
+        "project_id": record.project_id,
+        "fip_id": record.ownership.fip_id if record.ownership else None,
+    }
