@@ -39,7 +39,7 @@ class ReconciliationPlanningOptions:
 @dataclass(frozen=True, slots=True)
 class _ManagedRecordGroup:
     ownership: RecordOwnership
-    txt_record: GeneratedDnsRecord
+    txt_record: GeneratedDnsRecord | None
     a_record: GeneratedDnsRecord | None
 
 
@@ -89,10 +89,11 @@ class ReconciliationPlanner:
                     records_to_create.append(desired.a_record())
                 elif group.a_record.records != (floating_ip.address,):
                     records_to_update.append(desired.a_record())
-                if self._options.create_txt_metadata and group.txt_record.records != (
-                    desired.ownership.to_txt_value(),
-                ):
-                    records_to_update.append(desired.txt_record())
+                if self._options.create_txt_metadata:
+                    if group.txt_record is None:
+                        records_to_create.append(desired.txt_record())
+                    elif group.txt_record.records != (desired.ownership.to_txt_value(),):
+                        records_to_update.append(desired.txt_record())
 
             metadata_update = self._metadata_update_for(floating_ip, desired)
             if metadata_update is not None:
@@ -104,7 +105,8 @@ class ReconciliationPlanner:
                     continue
                 if group.a_record is not None:
                     records_to_delete.append(group.a_record)
-                records_to_delete.append(group.txt_record)
+                if group.txt_record is not None:
+                    records_to_delete.append(group.txt_record)
 
         return ReconciliationPlan(
             records_to_create=tuple(records_to_create),
@@ -131,6 +133,17 @@ class ReconciliationPlanner:
                 ownership=ownership,
                 txt_record=record,
                 a_record=a_records_by_fqdn.get(record.fqdn),
+            )
+        for record in records:
+            if record.record_type != DnsRecordType.A or record.ownership is None:
+                continue
+            groups.setdefault(
+                record.ownership.fip_id,
+                _ManagedRecordGroup(
+                    ownership=record.ownership,
+                    txt_record=None,
+                    a_record=record,
+                ),
             )
         return groups
 
@@ -174,7 +187,10 @@ class ReconciliationPlanner:
         floating_ip: FloatingIp,
         group: _ManagedRecordGroup,
     ) -> DesiredDnsRecordSet:
-        random_label = group.txt_record.fqdn.split(".", maxsplit=1)[0]
+        anchor_record = group.txt_record or group.a_record
+        if anchor_record is None:
+            raise DomainError("Managed record group has no DNS records")
+        random_label = anchor_record.fqdn.split(".", maxsplit=1)[0]
         project_id_label = self._project_id_label_generator.generate(floating_ip.project_id)
         ownership = RecordOwnership(
             managed_by=self._options.managed_by,
@@ -186,9 +202,9 @@ class ReconciliationPlanner:
             project_id=floating_ip.project_id,
             project_id_label=project_id_label.value,
             random_label=random_label,
-            fqdn=group.txt_record.fqdn,
+            fqdn=anchor_record.fqdn,
             address=floating_ip.address,
-            zone_name=group.txt_record.zone_name,
+            zone_name=anchor_record.zone_name,
             ttl=self._options.ttl,
             ownership=ownership,
         )

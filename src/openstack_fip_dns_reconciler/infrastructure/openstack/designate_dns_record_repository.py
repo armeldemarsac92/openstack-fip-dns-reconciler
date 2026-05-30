@@ -85,6 +85,7 @@ class OpenStackDesignateRecordRepository:
                 for record in recordsets
                 if record.record_type == DnsRecordType.A
             }
+            managed_fqdns: set[str] = set()
             for record in recordsets:
                 if record.record_type != DnsRecordType.TXT:
                     continue
@@ -93,9 +94,13 @@ class OpenStackDesignateRecordRepository:
                     continue
                 txt_record = self._with_ownership(record, ownership)
                 managed_records.append(txt_record)
+                managed_fqdns.add(record.fqdn)
                 a_record = a_records_by_fqdn.get(record.fqdn)
                 if a_record is not None:
                     managed_records.append(self._with_ownership(a_record, ownership))
+            for record in a_records_by_fqdn.values():
+                if record.fqdn not in managed_fqdns and record.ownership is not None:
+                    managed_records.append(record)
         return managed_records
 
     def _managed_zones(self) -> list[Any]:
@@ -127,6 +132,7 @@ class OpenStackDesignateRecordRepository:
             zone_name=zone_name,
             ttl=int(_resource_value(recordset, "ttl") or 300),
             project_id=project_id,
+            ownership=self._ownership_parser.parse(str(_resource_value(recordset, "description") or "")),
         )
 
     def _ownership_for(self, record: GeneratedDnsRecord) -> RecordOwnership | None:
@@ -179,14 +185,14 @@ class OpenStackDesignateRecordRepository:
             "type": record.record_type.value,
             "records": list(record.records),
             "ttl": record.ttl,
-            "description": "Managed by openstack-fip-dns-reconciler",
+            "description": _record_description(record),
         }
 
     def _recordset_update_attrs(self, record: GeneratedDnsRecord) -> dict[str, Any]:
         return {
             "records": list(record.records),
             "ttl": record.ttl,
-            "description": "Managed by openstack-fip-dns-reconciler",
+            "description": _record_description(record),
         }
 
 
@@ -209,3 +215,9 @@ def _record_log_extra(record: GeneratedDnsRecord) -> dict[str, Any]:
         "project_id": record.project_id,
         "fip_id": record.ownership.fip_id if record.ownership else None,
     }
+
+
+def _record_description(record: GeneratedDnsRecord) -> str:
+    if record.ownership is not None:
+        return record.ownership.to_txt_value()
+    return "managed-by=openstack-fip-dns-reconciler"

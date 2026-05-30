@@ -113,6 +113,33 @@ def test_planner_deletes_stale_managed_records() -> None:
     ]
 
 
+def test_planner_repairs_missing_txt_record_for_owned_a_record() -> None:
+    zone = DnsZoneName("fip.internal.mycloud.net.")
+    ownership = RecordOwnership(
+        managed_by="openstack-fip-dns-reconciler",
+        fip_id="fip-1",
+        project_id="8ab1c22f4d6e4f19a21c4d8f23bb912a",
+    )
+    owned_a_record = GeneratedDnsRecord(
+        fqdn="x7k9m2q4pa.8ab1c22f.fip.internal.mycloud.net.",
+        record_type=DnsRecordType.A,
+        records=("10.50.0.42",),
+        zone_name=zone,
+        ttl=60,
+        project_id=ownership.project_id,
+        ownership=ownership,
+    )
+    floating_ip = FloatingIp(
+        id="fip-1",
+        project_id=ownership.project_id,
+        address="10.50.0.42",
+    )
+
+    plan = _planner().plan([floating_ip], [owned_a_record])
+
+    assert [record.record_type for record in plan.records_to_create] == [DnsRecordType.TXT]
+
+
 def test_planner_ignores_unmanaged_records_for_cleanup() -> None:
     zone = DnsZoneName("fip.internal.mycloud.net.")
     unmanaged = GeneratedDnsRecord(
