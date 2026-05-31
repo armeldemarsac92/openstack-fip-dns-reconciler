@@ -240,26 +240,206 @@ systemctl enable --now openstack-fip-dns-reconciler
 
 ## Kolla-Ansible Notes
 
-Use a dedicated Keystone service user. The recommended role model is:
+Kolla-Ansible can install the Neutron and Designate policy overrides that make a
+least-privilege reconciler credential possible. It does not manage this project
+as an OpenStack service by default; run the reconciler as a normal container or
+systemd service beside the Kolla containers.
+
+The recommended model is:
 
 ```text
-network_inventory_reader
-dns_reconciler
+Keystone service user: fip-dns-reconciler
+Project scope: service
+Roles: network_inventory_reader, dns_reconciler
+Neutron: floating IP read across projects only
+Designate: generated-zone and recordset read/write across projects
 ```
 
-Desired permissions:
+For a single shared generated zone that is owned by an admin or DNS project,
+share that zone with the `service` project. This keeps the app credential scoped
+to the service project while allowing Designate to pass its zone visibility
+checks for recordset writes:
 
-- Neutron: list/read floating IPs across projects
-- Neutron: optionally update floating IP description and tags
-- Neutron: no floating IP create/delete permission
-- Designate: read generated zones and recordsets
-- Designate: create/update/delete generated recordsets
+```bash
+openstack project show service -f value -c id
+openstack zone share create <generated-zone-id-or-name> <service-project-id>
+```
 
-Keep generated zones controller-written and tenant-readable. Avoid promising
-per-recordset read-only behavior inside a tenant-writable zone. If tenants need
-custom DNS, give them separate tenant-managed zones.
+### Policy Overrides
 
-See `deploy/kolla/README.md` for policy sketches and a `clouds.yaml` example.
+Create Kolla policy override files on the deployment host. Adjust role names if
+your cloud uses different custom roles.
+
+`/etc/kolla/config/neutron/policy.yaml`:
+
+```yaml
+context_with_global_access: "role:network_inventory_reader or role:admin"
+get_floatingip: "role:network_inventory_reader or rule:admin_only or rule:admin_or_owner or (role:reader and project_id:%(project_id)s)"
+"get_floatingip:tags": "role:network_inventory_reader or rule:admin_only or rule:admin_or_owner or (role:reader and project_id:%(project_id)s)"
+```
+
+`context_with_global_access` is what lets Neutron return resources from every
+project without granting floating IP create, update, delete, or tag mutation.
+Do not add `update_floatingip` unless you intentionally enable
+`neutron_metadata.update_description` or `neutron_metadata.update_tags`.
+
+`/etc/kolla/config/designate/policy.yaml`:
+
+```yaml
+all_tenants: "role:dns_reconciler or role:admin"
+get_zones: "role:dns_reconciler or role:admin or (role:reader and project_id:%(project_id)s)"
+find_zones: "role:dns_reconciler or role:admin or (role:reader and project_id:%(project_id)s)"
+get_zone: "role:dns_reconciler or role:admin or (role:reader and project_id:%(project_id)s) or ('True':%(zone_shared)s)"
+
+get_recordsets: "role:dns_reconciler or role:admin or (role:reader and project_id:%(project_id)s)"
+get_recordset: "role:dns_reconciler or role:admin or (role:reader and project_id:%(project_id)s) or ('True':%(zone_shared)s)"
+find_recordset: "role:dns_reconciler or role:admin or (role:reader and project_id:%(project_id)s)"
+find_recordsets: "role:dns_reconciler or role:admin or (role:reader and project_id:%(project_id)s)"
+
+create_recordset: "role:dns_reconciler or ((role:member and project_id:%(project_id)s) and ('PRIMARY':%(zone_type)s)) or (role:admin and ('PRIMARY':%(zone_type)s)) or (role:admin and ('SECONDARY':%(zone_type)s)) or (('True':%(zone_shared)s) and ('PRIMARY':%(zone_type)s))"
+update_recordset: "role:dns_reconciler or ((role:member and project_id:%(project_id)s) and ('PRIMARY':%(zone_type)s)) or (role:admin and ('PRIMARY':%(zone_type)s)) or (role:admin and ('SECONDARY':%(zone_type)s)) or (role:member and project_id:%(recordset_project_id)s and ('PRIMARY':%(zone_type)s))"
+delete_recordset: "role:dns_reconciler or ((role:member and project_id:%(project_id)s) and ('PRIMARY':%(zone_type)s)) or (role:admin and ('PRIMARY':%(zone_type)s)) or (role:admin and ('SECONDARY':%(zone_type)s)) or (role:member and project_id:%(recordset_project_id)s and ('PRIMARY':%(zone_type)s))"
+```
+
+`all_tenants` lets Designate list zones and recordsets outside the credential's
+project. The recordset rules grant generated recordset management, but not zone
+create, update, delete, transfer, import, export, or managed-record editing.
+
+Apply the overrides with a focused reconfigure:
+
+```bash
+kolla-ansible reconfigure \
+  -i /path/to/multinode \
+  -t neutron,designate \
+  --configdir /etc/kolla
+```
+
+After the play finishes, confirm the relevant containers are healthy and test
+the intended API surface with the reconciler credential before running the
+controller.
+
+### Application Credential
+
+Create the custom roles and assign them only to the reconciler service user in
+the `service` project:
+
+```bash
+openstack role create network_inventory_reader
+openstack role create dns_reconciler
+openstack user create --domain Default --project service --password-prompt fip-dns-reconciler
+openstack role add --user fip-dns-reconciler --project service network_inventory_reader
+openstack role add --user fip-dns-reconciler --project service dns_reconciler
+```
+
+Then authenticate as that service user and create a restricted
+application credential. The access-rule service names are Keystone service types;
+confirm them with `openstack catalog list` if your deployment uses custom types.
+Do not use `--unrestricted`.
+
+`access-rules.json`:
+
+```json
+[
+  {"service": "network", "method": "GET", "path": "/v2.0/floatingips"},
+  {"service": "network", "method": "GET", "path": "/v2.0/floatingips/*"},
+  {"service": "dns", "method": "GET", "path": "/v2/zones"},
+  {"service": "dns", "method": "GET", "path": "/v2/zones/*"},
+  {"service": "dns", "method": "GET", "path": "/v2/zones/*/recordsets"},
+  {"service": "dns", "method": "GET", "path": "/v2/zones/*/recordsets/*"},
+  {"service": "dns", "method": "POST", "path": "/v2/zones/*/recordsets"},
+  {"service": "dns", "method": "PUT", "path": "/v2/zones/*/recordsets/*"},
+  {"service": "dns", "method": "PATCH", "path": "/v2/zones/*/recordsets/*"},
+  {"service": "dns", "method": "DELETE", "path": "/v2/zones/*/recordsets/*"}
+]
+```
+
+```bash
+openstack application credential create \
+  --role network_inventory_reader \
+  --role dns_reconciler \
+  --access-rules access-rules.json \
+  fip-dns-reconciler
+```
+
+Store the returned application credential ID and secret in a root-owned
+`clouds.yaml`, then mount that file into the reconciler container. The secret is
+shown only once. Do not bake credentials into the image.
+
+```yaml
+clouds:
+  fip-dns-reconciler:
+    auth_type: v3applicationcredential
+    auth:
+      auth_url: https://openstack.example.net:5000
+      application_credential_id: <id>
+      application_credential_secret: <secret>
+    region_name: RegionOne
+    interface: internal
+    identity_api_version: 3
+```
+
+### Reconciler Configuration
+
+For a Kolla deployment that uses the policy model above, set:
+
+```yaml
+openstack:
+  cloud: fip-dns-reconciler
+
+dns:
+  base_domain: apps.example.net.
+  zone_strategy: single_zone
+  all_projects: true
+
+neutron_metadata:
+  update_description: false
+  update_tags: false
+```
+
+Set `dns.all_projects: true` so the reconciler requests all-project Designate
+zone and recordset discovery. Keep Neutron metadata writes disabled unless the
+credential is intentionally granted the corresponding Neutron update policies.
+
+If your Designate deployment rejects the generated TXT ownership records, set:
+
+```yaml
+records:
+  create_txt_metadata: false
+```
+
+In that mode, ownership is kept in managed A record descriptions instead of TXT
+recordsets.
+
+### Container Runtime
+
+On many Kolla control nodes, the Docker bridge cannot reach the internal API
+VIP. Use host networking if the reconciler needs the same internal management
+network access as the Kolla containers:
+
+```bash
+docker run -d \
+  --name openstack_fip_dns_reconciler \
+  --restart unless-stopped \
+  --network host \
+  -v /etc/openstack-fip-dns-reconciler/clouds.yaml:/etc/openstack/clouds.yaml:ro \
+  -v /etc/openstack-fip-dns-reconciler/config.yaml:/etc/openstack-fip-dns-reconciler/config.yaml:ro \
+  ghcr.io/armeldemarsac92/openstack-fip-dns-reconciler:latest
+```
+
+Run a one-shot dry run before starting the persistent container:
+
+```bash
+docker run --rm --network host \
+  -v /etc/openstack-fip-dns-reconciler/clouds.yaml:/etc/openstack/clouds.yaml:ro \
+  -v /etc/openstack-fip-dns-reconciler/config.yaml:/etc/openstack-fip-dns-reconciler/config.yaml:ro \
+  ghcr.io/armeldemarsac92/openstack-fip-dns-reconciler:latest \
+  --config /etc/openstack-fip-dns-reconciler/config.yaml \
+  --once \
+  --dry-run
+```
+
+A healthy pass should discover floating IPs and managed DNS records, build a
+plan, and finish with `error_count=0`.
 
 ## Architecture
 
