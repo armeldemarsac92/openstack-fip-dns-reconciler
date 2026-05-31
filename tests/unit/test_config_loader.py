@@ -16,3 +16,18 @@ dns:
     settings = load_settings(config_file)
 
     assert settings.dns.base_domain == "fip.internal.example."
+
+
+def test_dns_all_projects_defaults_to_false(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        """
+dns:
+  base_domain: fip.internal.example.
+""",
+        encoding="utf-8",
+    )
+
+    settings = load_settings(config_file)
+
+    assert settings.dns.all_projects is False

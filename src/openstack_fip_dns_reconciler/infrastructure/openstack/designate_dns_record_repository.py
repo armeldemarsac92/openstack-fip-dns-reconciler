@@ -18,11 +18,13 @@ class OpenStackDesignateRecordRepository:
         base_domain: str,
         zone_strategy: ZoneStrategy,
         ownership_parser: OwnershipParser,
+        all_projects: bool = False,
     ) -> None:
         self._connection = connection
         self._base_domain = DnsZoneName(base_domain)
         self._zone_strategy = zone_strategy
         self._ownership_parser = ownership_parser
+        self._all_projects = all_projects
 
     def list_managed_records(self) -> list[GeneratedDnsRecord]:
         try:
@@ -77,7 +79,10 @@ class OpenStackDesignateRecordRepository:
             zone_id = _resource_value(zone, "id")
             recordsets = [
                 record
-                for recordset in self._connection.dns.recordsets(zone_id)
+                for recordset in self._connection.dns.recordsets(
+                    zone_id,
+                    **self._scope_query(),
+                )
                 if (record := self._to_domain(recordset, zone_name)) is not None
             ]
             a_records_by_fqdn = {
@@ -104,7 +109,7 @@ class OpenStackDesignateRecordRepository:
         return managed_records
 
     def _managed_zones(self) -> list[Any]:
-        zones = list(self._connection.dns.zones())
+        zones = list(self._connection.dns.zones(**self._scope_query()))
         if self._zone_strategy == ZoneStrategy.SINGLE_ZONE:
             return [
                 zone
@@ -160,16 +165,21 @@ class OpenStackDesignateRecordRepository:
         )
 
     def _find_required_zone(self, zone_name: str) -> Any:
-        zone = self._connection.dns.find_zone(zone_name)
-        if zone is None:
-            raise InfrastructureError(f"Designate zone not found: {zone_name}")
-        return zone
+        normalized_zone_name = _normalize_name(zone_name)
+        for zone in self._managed_zones():
+            if _normalize_name(_resource_value(zone, "name")) == normalized_zone_name:
+                return zone
+        raise InfrastructureError(f"Designate zone not found: {zone_name}")
 
     def _find_recordset(self, zone: Any, record: GeneratedDnsRecord) -> Any | None:
+        query = {
+            "name": record.fqdn,
+            "type": record.record_type.value,
+            **self._scope_query(),
+        }
         for existing in self._connection.dns.recordsets(
             _resource_value(zone, "id"),
-            name=record.fqdn,
-            type=record.record_type.value,
+            **query,
         ):
             if (
                 _normalize_name(_resource_value(existing, "name")) == record.fqdn
@@ -196,6 +206,11 @@ class OpenStackDesignateRecordRepository:
             "ttl": record.ttl,
             "description": _record_description(record),
         }
+
+    def _scope_query(self) -> dict[str, bool]:
+        if not self._all_projects:
+            return {}
+        return {"all_projects": True}
 
 
 def _resource_value(resource: Any, name: str) -> Any:

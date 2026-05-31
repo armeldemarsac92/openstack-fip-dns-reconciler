@@ -36,6 +36,7 @@ class DnsSettings(BaseModel):
 
     base_domain: str
     zone_strategy: ZoneStrategy = ZoneStrategy.SINGLE_ZONE
+    all_projects: bool = False
     ttl: int = Field(default=60, ge=1)
     label_length: int = Field(default=13, ge=1, le=63)
     label_encoding: LabelEncoding = LabelEncoding.BASE32

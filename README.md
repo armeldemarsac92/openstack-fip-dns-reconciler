@@ -88,6 +88,7 @@ controller:
 dns:
   base_domain: fip.internal.mycloud.net.
   zone_strategy: single_zone
+  all_projects: false
   ttl: 60
   label_length: 13
   label_encoding: base32
@@ -97,6 +98,21 @@ dns:
 
 Credentials are loaded by `openstacksdk`, so both `clouds.yaml` and `OS_*`
 environment variables are supported.
+
+Set `dns.all_projects: true` when the reconciler uses a least-privilege service
+credential that can read/write generated Designate recordsets across projects
+but does not own the generated zone. With this enabled, the Designate adapter
+adds `all_projects=True` to zone and recordset discovery and resolves managed
+zones from the all-project zone list instead of using project-scoped zone lookup.
+
+If the service credential does not have Neutron floating IP write privileges,
+disable display metadata writes:
+
+```yaml
+neutron_metadata:
+  update_description: false
+  update_tags: false
+```
 
 ## Zone Strategies
 

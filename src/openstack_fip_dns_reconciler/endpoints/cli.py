@@ -91,6 +91,7 @@ def build_service(settings: AppSettings) -> FloatingIpDnsReconciliationService:
             base_domain=settings.dns.base_domain,
             zone_strategy=zone_strategy,
             ownership_parser=ownership_parser,
+            all_projects=settings.dns.all_projects,
         ),
         floating_ip_metadata_repository=OpenStackFloatingIpMetadataRepository(connection),
         planner=planner,
