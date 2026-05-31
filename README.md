@@ -189,6 +189,23 @@ docker run --rm \
   openstack-fip-dns-reconciler:latest
 ```
 
+## GitHub Artifacts
+
+The repository publishes artifacts with GitHub Actions on pushes to `main`,
+pull requests, manual dispatches, and `v*.*.*` tags.
+
+On `main`, the workflow runs tests, Ruff, mypy, builds Python wheel/source
+distributions, uploads them as workflow artifacts, and publishes a Docker image
+to GitHub Container Registry:
+
+```text
+ghcr.io/armeldemarsac92/openstack-fip-dns-reconciler:latest
+ghcr.io/armeldemarsac92/openstack-fip-dns-reconciler:sha-<commit>
+```
+
+On version tags such as `v0.1.0`, it also creates a GitHub Release with the
+wheel, source distribution, and SHA256 checksum attached.
+
 ## systemd
 
 Install the package in a virtualenv or system Python path, place configuration
