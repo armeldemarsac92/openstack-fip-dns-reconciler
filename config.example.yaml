@@ -6,11 +6,11 @@ controller:
   dry_run: false
 
 dns:
-  base_domain: fip.internal.mycloud.net.
-  zone_strategy: single_zone
-  all_projects: false
-  create_missing_project_zones: false
-  project_zone_email: hostmaster@fip.internal.mycloud.net
+  base_domain: apps.mustelinet.com.
+  zone_strategy: per_project_zone
+  all_projects: true
+  create_missing_project_zones: true
+  project_zone_email: hostmaster@apps.mustelinet.com
   ttl: 60
   label_length: 13
   label_encoding: base32

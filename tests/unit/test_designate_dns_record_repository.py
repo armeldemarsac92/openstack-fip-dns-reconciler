@@ -30,6 +30,8 @@ class FakeDnsProxy:
     recordsets_calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
     create_calls: list[tuple[dict[str, Any], dict[str, Any]]] = field(default_factory=list)
     post_calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    put_calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
+    delete_calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
 
     def zones(self, **query: Any) -> list[dict[str, Any]]:
         self.zones_calls.append(query)
@@ -43,16 +45,43 @@ class FakeDnsProxy:
         self.create_calls.append((zone, attrs))
 
     def post(self, url: str, **kwargs: Any) -> FakeResponse:
+        self.post_calls.append((url, kwargs))
+        if url == "/zones":
+            return self._create_zone(kwargs)
+        if url.endswith("/recordsets"):
+            return self._create_recordset(url, kwargs)
+        raise AssertionError(f"Unexpected POST URL: {url}")
+
+    def put(self, url: str, **kwargs: Any) -> FakeResponse:
+        self.put_calls.append((url, kwargs))
+        return FakeResponse(kwargs["json"])
+
+    def delete(self, url: str, **kwargs: Any) -> FakeResponse:
+        self.delete_calls.append((url, kwargs))
+        return FakeResponse({})
+
+    def _create_zone(self, kwargs: dict[str, Any]) -> FakeResponse:
         attrs = kwargs["json"]
         headers = kwargs["headers"]
         zone = {
-            "id": f"zone-{len(self.post_calls) + 1}",
+            "id": f"zone-{len(self.post_calls)}",
             "name": attrs["name"],
             "project_id": headers["X-Auth-Sudo-Project-ID"],
         }
-        self.post_calls.append((url, kwargs))
         self.zones_result.append(zone)
         return FakeResponse(zone)
+
+    def _create_recordset(self, url: str, kwargs: dict[str, Any]) -> FakeResponse:
+        attrs = kwargs["json"]
+        headers = kwargs["headers"]
+        zone_id = url.split("/")[2]
+        recordset = {
+            "id": f"recordset-{len(self.recordsets_by_zone.get(zone_id, [])) + 1}",
+            "project_id": headers["X-Auth-Sudo-Project-ID"],
+            **attrs,
+        }
+        self.recordsets_by_zone.setdefault(zone_id, []).append(recordset)
+        return FakeResponse(recordset)
 
     def find_zone(self, name_or_id: str, ignore_missing: bool = True) -> None:
         raise AssertionError("find_zone must not be used by the Designate repository")
@@ -141,7 +170,7 @@ def test_missing_per_project_zone_is_created_for_floating_ip_project() -> None:
 
     repository.create_record(record)
 
-    assert len(dns.post_calls) == 1
+    assert len(dns.post_calls) == 2
     url, kwargs = dns.post_calls[0]
     assert url == "/zones"
     assert kwargs["headers"] == {"X-Auth-Sudo-Project-ID": "8ab1c22f4d6e4f19a21c4d8f23bb912a"}
@@ -156,7 +185,13 @@ def test_missing_per_project_zone_is_created_for_floating_ip_project() -> None:
         ),
     }
     assert "project_id" not in kwargs["json"]
-    assert dns.create_calls[0][0]["name"] == "8ab1c22f.apps.mustelinet.com."
+    recordset_url, recordset_kwargs = dns.post_calls[1]
+    assert recordset_url == "/zones/zone-1/recordsets"
+    assert recordset_kwargs["headers"] == {
+        "X-Auth-Sudo-Project-ID": "8ab1c22f4d6e4f19a21c4d8f23bb912a"
+    }
+    assert recordset_kwargs["json"]["name"] == "x7k9m2q4pa.8ab1c22f.apps.mustelinet.com."
+    assert dns.create_calls == []
     assert dns.recordsets_calls == [
         (
             "zone-1",
@@ -178,6 +213,139 @@ def test_missing_zone_is_not_created_by_default() -> None:
         repository.create_record(record)
 
     assert dns.post_calls == []
+
+
+def test_per_project_recordset_create_uses_sudo_project_header() -> None:
+    dns = FakeDnsProxy(
+        zones_result=[
+            {
+                "id": "tenant-zone",
+                "name": "8ab1c22f.apps.mustelinet.com.",
+                "project_id": "8ab1c22f4d6e4f19a21c4d8f23bb912a",
+            }
+        ]
+    )
+    repository = _repository(dns, all_projects=True, zone_strategy=ZoneStrategy.PER_PROJECT_ZONE)
+    record = _a_record(zone_name="8ab1c22f.apps.mustelinet.com.")
+
+    repository.create_record(record)
+
+    assert dns.post_calls == [
+        (
+            "/zones/tenant-zone/recordsets",
+            {
+                "json": {
+                    "name": "x7k9m2q4pa.8ab1c22f.apps.mustelinet.com.",
+                    "type": "A",
+                    "records": ["10.50.0.42"],
+                    "ttl": 60,
+                    "description": _ownership().to_txt_value(),
+                },
+                "headers": {"X-Auth-Sudo-Project-ID": "8ab1c22f4d6e4f19a21c4d8f23bb912a"},
+                "raise_exc": True,
+            },
+        )
+    ]
+    assert dns.create_calls == []
+
+
+def test_per_project_recordset_update_uses_sudo_project_header() -> None:
+    dns = FakeDnsProxy(
+        zones_result=[
+            {
+                "id": "tenant-zone",
+                "name": "8ab1c22f.apps.mustelinet.com.",
+                "project_id": "8ab1c22f4d6e4f19a21c4d8f23bb912a",
+            }
+        ],
+        recordsets_by_zone={
+            "tenant-zone": [
+                {
+                    "id": "recordset-1",
+                    "name": "x7k9m2q4pa.8ab1c22f.apps.mustelinet.com.",
+                    "type": "A",
+                    "records": ["10.50.0.41"],
+                    "ttl": 60,
+                    "project_id": "8ab1c22f4d6e4f19a21c4d8f23bb912a",
+                }
+            ]
+        },
+    )
+    repository = _repository(dns, all_projects=True, zone_strategy=ZoneStrategy.PER_PROJECT_ZONE)
+    record = _a_record(zone_name="8ab1c22f.apps.mustelinet.com.")
+
+    repository.update_record(record)
+
+    assert dns.put_calls == [
+        (
+            "/zones/tenant-zone/recordsets/recordset-1",
+            {
+                "json": {
+                    "records": ["10.50.0.42"],
+                    "ttl": 60,
+                    "description": _ownership().to_txt_value(),
+                },
+                "headers": {"X-Auth-Sudo-Project-ID": "8ab1c22f4d6e4f19a21c4d8f23bb912a"},
+                "raise_exc": True,
+            },
+        )
+    ]
+
+
+def test_per_project_recordset_delete_uses_sudo_project_header() -> None:
+    dns = FakeDnsProxy(
+        zones_result=[
+            {
+                "id": "tenant-zone",
+                "name": "8ab1c22f.apps.mustelinet.com.",
+                "project_id": "8ab1c22f4d6e4f19a21c4d8f23bb912a",
+            }
+        ],
+        recordsets_by_zone={
+            "tenant-zone": [
+                {
+                    "id": "recordset-1",
+                    "name": "x7k9m2q4pa.8ab1c22f.apps.mustelinet.com.",
+                    "type": "A",
+                    "records": ["10.50.0.42"],
+                    "ttl": 60,
+                    "project_id": "8ab1c22f4d6e4f19a21c4d8f23bb912a",
+                }
+            ]
+        },
+    )
+    repository = _repository(dns, all_projects=True, zone_strategy=ZoneStrategy.PER_PROJECT_ZONE)
+    record = _a_record(zone_name="8ab1c22f.apps.mustelinet.com.")
+
+    repository.delete_record(record)
+
+    assert dns.delete_calls == [
+        (
+            "/zones/tenant-zone/recordsets/recordset-1",
+            {
+                "headers": {"X-Auth-Sudo-Project-ID": "8ab1c22f4d6e4f19a21c4d8f23bb912a"},
+                "raise_exc": False,
+            },
+        )
+    ]
+
+
+def test_per_project_zone_creation_does_not_require_root_zone() -> None:
+    dns = FakeDnsProxy(zones_result=[{"id": "root-zone", "name": "apps.mustelinet.com."}])
+    repository = _repository(
+        dns,
+        all_projects=True,
+        zone_strategy=ZoneStrategy.PER_PROJECT_ZONE,
+        create_missing_project_zones=True,
+        project_zone_email="hostmaster@apps.mustelinet.com",
+    )
+    record = _a_record(zone_name="8ab1c22f.apps.mustelinet.com.")
+
+    repository.create_record(record)
+
+    assert dns.post_calls[0][0] == "/zones"
+    assert dns.post_calls[0][1]["json"]["name"] == "8ab1c22f.apps.mustelinet.com."
+    assert all(zone_id != "root-zone" for zone_id, _query in dns.recordsets_calls)
 
 
 def _repository(

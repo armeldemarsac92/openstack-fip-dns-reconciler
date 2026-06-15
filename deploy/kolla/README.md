@@ -25,7 +25,9 @@ Minimum checklist:
 8. For tenant-isolated visibility, use `dns.zone_strategy: per_project_zone` and
    `dns.create_missing_project_zones: true`; the reconciler creates generated
    zones with `X-Auth-Sudo-Project-ID` set to the floating IP owner project.
-9. Run a one-shot dry run, then start the persistent container.
+9. Remove any root `apps.mustelinet.com.` Designate zone before enabling this
+   mode; the reconciler only manages tenant child zones.
+10. Run a one-shot dry run, then start the persistent container.
 
 Avoid granting `update_floatingip` to the inventory role unless the deployment
 intentionally wants the reconciler to mutate floating IP descriptions or tags.
@@ -42,11 +44,18 @@ dns:
 
 In that mode, the reconciler creates each zone with `X-Auth-Sudo-Project-ID`
 set to the floating IP owner project; the zone create JSON body does not contain
-`project_id`. Project members can read/list their generated records when
-Designate policy allows normal project members or readers to access
-project-owned zones. The service user also needs the generated-zone `create_zone`
-and `use_sudo` rules; do not grant it update/delete rights for zones unless you
-intentionally add zone lifecycle management later.
+`project_id`. It also creates, updates, and deletes generated recordsets with
+the same sudo project header so Designate resolves the tenant-owned zone from
+the tenant project context. Project members can read/list their generated records
+when Designate policy allows normal project members or readers to access
+project-owned zones. The service user also needs the generated-zone
+`create_zone`, `get_zone_ns_records`, and `use_sudo` rules; do not grant it
+update/delete rights for zones unless you intentionally add zone lifecycle
+management later.
+
+Do not create or keep a root `apps.mustelinet.com.` Designate zone for this
+mode. Designate may reject tenant-owned child zone creation with
+`403 IllegalChildZone` while that root zone exists.
 
 Keep generated zones controller-written and tenant-readable. Do not rely on
 per-recordset read-only policy inside a tenant-writable zone.

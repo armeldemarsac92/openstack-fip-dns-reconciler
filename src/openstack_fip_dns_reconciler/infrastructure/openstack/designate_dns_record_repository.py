@@ -1,5 +1,6 @@
 import logging
 from typing import Any
+from urllib.parse import quote
 
 from openstack_fip_dns_reconciler.domain.models.dns_name import DnsZoneName
 from openstack_fip_dns_reconciler.domain.models.dns_record import DnsRecordType, GeneratedDnsRecord
@@ -48,9 +49,9 @@ class OpenStackDesignateRecordRepository:
             zone = self._find_or_create_required_zone(record)
             existing = self._find_recordset(zone, record)
             if existing is not None:
-                self._update_existing_recordset(existing, record)
+                self._update_existing_recordset(zone, existing, record)
             else:
-                self._connection.dns.create_recordset(zone, **self._recordset_attrs(record))
+                self._create_recordset(zone, record)
         except Exception as exc:
             LOG.exception("Failed to create Designate record", extra=_record_log_extra(record))
             raise InfrastructureError("Failed to create Designate record") from exc
@@ -61,9 +62,9 @@ class OpenStackDesignateRecordRepository:
             zone = self._find_or_create_required_zone(record)
             existing = self._find_recordset(zone, record)
             if existing is None:
-                self._connection.dns.create_recordset(zone, **self._recordset_attrs(record))
+                self._create_recordset(zone, record)
             else:
-                self._update_existing_recordset(existing, record)
+                self._update_existing_recordset(zone, existing, record)
         except Exception as exc:
             LOG.exception("Failed to update Designate record", extra=_record_log_extra(record))
             raise InfrastructureError("Failed to update Designate record") from exc
@@ -74,7 +75,7 @@ class OpenStackDesignateRecordRepository:
             zone = self._find_required_zone(record.zone_name.value)
             existing = self._find_recordset(zone, record)
             if existing is not None:
-                self._connection.dns.delete_recordset(existing, zone, ignore_missing=True)
+                self._delete_existing_recordset(zone, existing, record)
         except Exception as exc:
             LOG.exception("Failed to delete Designate record", extra=_record_log_extra(record))
             raise InfrastructureError("Failed to delete Designate record") from exc
@@ -221,7 +222,7 @@ class OpenStackDesignateRecordRepository:
             response = self._connection.dns.post(
                 "/zones",
                 json=attrs,
-                headers={"X-Auth-Sudo-Project-ID": record.project_id},
+                headers=_tenant_sudo_headers(record),
                 raise_exc=True,
             )
             zone = _response_json(response)
@@ -256,8 +257,50 @@ class OpenStackDesignateRecordRepository:
                 return existing
         return None
 
-    def _update_existing_recordset(self, existing: Any, record: GeneratedDnsRecord) -> None:
+    def _create_recordset(self, zone: Any, record: GeneratedDnsRecord) -> None:
+        if self._uses_tenant_sudo_context():
+            self._connection.dns.post(
+                _recordsets_path(zone),
+                json=self._recordset_attrs(record),
+                headers=_tenant_sudo_headers(record),
+                raise_exc=True,
+            )
+            return
+        self._connection.dns.create_recordset(zone, **self._recordset_attrs(record))
+
+    def _update_existing_recordset(
+        self,
+        zone: Any,
+        existing: Any,
+        record: GeneratedDnsRecord,
+    ) -> None:
+        if self._uses_tenant_sudo_context():
+            self._connection.dns.put(
+                _recordset_path(zone, existing),
+                json=self._recordset_update_attrs(record),
+                headers=_tenant_sudo_headers(record),
+                raise_exc=True,
+            )
+            return
         self._connection.dns.update_recordset(existing, **self._recordset_update_attrs(record))
+
+    def _delete_existing_recordset(
+        self,
+        zone: Any,
+        existing: Any,
+        record: GeneratedDnsRecord,
+    ) -> None:
+        if self._uses_tenant_sudo_context():
+            self._connection.dns.delete(
+                _recordset_path(zone, existing),
+                headers=_tenant_sudo_headers(record),
+                raise_exc=False,
+            )
+            return
+        self._connection.dns.delete_recordset(existing, zone, ignore_missing=True)
+
+    def _uses_tenant_sudo_context(self) -> bool:
+        return self._zone_strategy == ZoneStrategy.PER_PROJECT_ZONE
 
     def _recordset_attrs(self, record: GeneratedDnsRecord) -> dict[str, Any]:
         return {
@@ -291,6 +334,30 @@ def _response_json(response: Any) -> Any:
     if hasattr(response, "json"):
         return response.json()
     return response
+
+
+def _required_resource_value(resource: Any, name: str, resource_label: str) -> str:
+    value = _resource_value(resource, name)
+    if value is None or str(value).strip() == "":
+        raise InfrastructureError(f"{resource_label} is missing {name}")
+    return str(value)
+
+
+def _recordsets_path(zone: Any) -> str:
+    zone_id = quote(_required_resource_value(zone, "id", "Designate zone"), safe="")
+    return f"/zones/{zone_id}/recordsets"
+
+
+def _recordset_path(zone: Any, recordset: Any) -> str:
+    recordset_id = quote(
+        _required_resource_value(recordset, "id", "Designate recordset"),
+        safe="",
+    )
+    return f"{_recordsets_path(zone)}/{recordset_id}"
+
+
+def _tenant_sudo_headers(record: GeneratedDnsRecord) -> dict[str, str]:
+    return {"X-Auth-Sudo-Project-ID": record.project_id}
 
 
 def _normalize_name(value: Any) -> str:

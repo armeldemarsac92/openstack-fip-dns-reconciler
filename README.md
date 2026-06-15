@@ -86,11 +86,11 @@ controller:
   dry_run: false
 
 dns:
-  base_domain: fip.internal.mycloud.net.
-  zone_strategy: single_zone
-  all_projects: false
-  create_missing_project_zones: false
-  project_zone_email: hostmaster@fip.internal.mycloud.net
+  base_domain: apps.mustelinet.com.
+  zone_strategy: per_project_zone
+  all_projects: true
+  create_missing_project_zones: true
+  project_zone_email: hostmaster@apps.mustelinet.com
   ttl: 60
   label_length: 13
   label_encoding: base32
@@ -103,7 +103,7 @@ environment variables are supported.
 
 Set `dns.all_projects: true` when the reconciler uses a least-privilege service
 credential that can read/write generated Designate recordsets across projects
-but does not own the generated zone. With this enabled, the Designate adapter
+but does not own every generated zone. With this enabled, the Designate adapter
 adds `all_projects=True` to zone and recordset discovery and resolves managed
 zones from the all-project zone list instead of using project-scoped zone lookup.
 
@@ -133,7 +133,7 @@ x7k9m2q4pa.8ab1c22f.fip.internal.mycloud.net.
 `per_project_zone` uses a generated zone per project label:
 
 ```text
-8ab1c22f.fip.internal.mycloud.net.
+2e529dc4.apps.mustelinet.com.
 ```
 
 The FQDN remains the same. By default, the reconciler expects generated zones to
@@ -144,7 +144,7 @@ dns:
   zone_strategy: per_project_zone
   all_projects: true
   create_missing_project_zones: true
-  project_zone_email: hostmaster@fip.internal.mycloud.net
+  project_zone_email: hostmaster@apps.mustelinet.com
 ```
 
 When it creates a project zone, the reconciler sends a raw Designate zone create
@@ -155,6 +155,15 @@ project, while the service credential still performs the write with
 cross-project `dns_reconciler` permissions. Project members can list/read that
 zone when your Designate policy allows normal project members or readers to read
 project-owned zones.
+
+The base domain, for example `apps.mustelinet.com.`, is only used to derive
+tenant child zone names. The reconciler does not require, create, or manage a
+root `apps.mustelinet.com.` Designate zone. If that root zone exists in
+Designate, remove it before enabling tenant-owned child zones; Designate may
+reject child zone creation with `403 IllegalChildZone` while the parent zone is
+present. Recordset create, update, and delete requests inside tenant project
+zones are also sent with the same `X-Auth-Sudo-Project-ID` header so Designate
+resolves the zone from the tenant project context.
 
 ## User Visibility
 
@@ -319,6 +328,7 @@ all_tenants: "role:dns_reconciler or role:admin"
 get_zones: "role:dns_reconciler or role:admin or (role:reader and project_id:%(project_id)s)"
 find_zones: "role:dns_reconciler or role:admin or (role:reader and project_id:%(project_id)s)"
 get_zone: "role:dns_reconciler or role:admin or (role:reader and project_id:%(project_id)s) or ('True':%(zone_shared)s)"
+get_zone_ns_records: "role:dns_reconciler or role:admin or (role:reader and project_id:%(project_id)s)"
 create_zone: "role:dns_reconciler or role:admin or (role:member and project_id:%(project_id)s)"
 use_sudo: "role:dns_reconciler or role:admin"
 
@@ -422,33 +432,24 @@ openstack:
   cloud: fip-dns-reconciler
 
 dns:
-  base_domain: apps.example.net.
-  zone_strategy: single_zone
+  base_domain: apps.mustelinet.com.
+  zone_strategy: per_project_zone
   all_projects: true
+  create_missing_project_zones: true
+  project_zone_email: hostmaster@apps.mustelinet.com
 
 neutron_metadata:
   update_description: false
   update_tags: false
 ```
 
-Set `dns.all_projects: true` so the reconciler requests all-project Designate
-zone and recordset discovery. Keep Neutron metadata writes disabled unless the
-credential is intentionally granted the corresponding Neutron update policies.
-
-For tenant-isolated generated zones that are visible to project members, use:
-
-```yaml
-dns:
-  base_domain: apps.example.net.
-  zone_strategy: per_project_zone
-  all_projects: true
-  create_missing_project_zones: true
-  project_zone_email: hostmaster@apps.example.net
-```
-
 The reconciler creates missing zones with `X-Auth-Sudo-Project-ID` set to the
 floating IP owner project, then creates the generated FIP recordsets inside that
-zone.
+zone with the same sudo project context. Keep Neutron metadata writes disabled
+unless the credential is intentionally granted the corresponding Neutron update
+policies. Remove any root `apps.mustelinet.com.` Designate zone first; the
+reconciler only manages tenant child zones such as
+`2e529dc4.apps.mustelinet.com.`.
 
 If your Designate deployment rejects the generated TXT ownership records, set:
 
