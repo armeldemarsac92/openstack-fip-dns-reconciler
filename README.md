@@ -89,6 +89,8 @@ dns:
   base_domain: fip.internal.mycloud.net.
   zone_strategy: single_zone
   all_projects: false
+  create_missing_project_zones: false
+  project_zone_email: hostmaster@fip.internal.mycloud.net
   ttl: 60
   label_length: 13
   label_encoding: base32
@@ -134,9 +136,23 @@ x7k9m2q4pa.8ab1c22f.fip.internal.mycloud.net.
 8ab1c22f.fip.internal.mycloud.net.
 ```
 
-The FQDN remains the same. The MVP expects generated zones to exist and be
-readable/writable by the reconciler. Missing zones are logged as operational
-errors and retried on the next polling pass.
+The FQDN remains the same. By default, the reconciler expects generated zones to
+exist. To let the reconciler create missing project zones, enable:
+
+```yaml
+dns:
+  zone_strategy: per_project_zone
+  all_projects: true
+  create_missing_project_zones: true
+  project_zone_email: hostmaster@fip.internal.mycloud.net
+```
+
+When it creates a project zone, the reconciler sets the Designate zone
+`project_id` to the floating IP owner project. That makes the zone live inside
+the tenant project, while the service credential still performs the write with
+cross-project `dns_reconciler` permissions. Project members can list/read that
+zone when your Designate policy allows normal project members or readers to read
+project-owned zones.
 
 ## User Visibility
 
@@ -265,6 +281,16 @@ openstack project show service -f value -c id
 openstack zone share create <generated-zone-id-or-name> <service-project-id>
 ```
 
+For tenant visibility without cross-tenant record listing, prefer per-project
+generated zones owned by each tenant project. With `zone_strategy:
+per_project_zone` and `create_missing_project_zones: true`, the reconciler
+creates missing generated zones with `project_id` set to the floating IP owner
+project. Project members can read/list their generated records when Designate
+policy allows normal project members or readers to read project-owned zones.
+
+Avoid promising per-recordset read-only behavior inside a tenant-writable shared
+zone. If tenants need custom DNS, give them separate tenant-managed zones.
+
 ### Policy Overrides
 
 Create Kolla policy override files on the deployment host. Adjust role names if
@@ -290,6 +316,7 @@ all_tenants: "role:dns_reconciler or role:admin"
 get_zones: "role:dns_reconciler or role:admin or (role:reader and project_id:%(project_id)s)"
 find_zones: "role:dns_reconciler or role:admin or (role:reader and project_id:%(project_id)s)"
 get_zone: "role:dns_reconciler or role:admin or (role:reader and project_id:%(project_id)s) or ('True':%(zone_shared)s)"
+create_zone: "role:dns_reconciler or role:admin or (role:member and project_id:%(project_id)s)"
 
 get_recordsets: "role:dns_reconciler or role:admin or (role:reader and project_id:%(project_id)s)"
 get_recordset: "role:dns_reconciler or role:admin or (role:reader and project_id:%(project_id)s) or ('True':%(zone_shared)s)"
@@ -302,8 +329,10 @@ delete_recordset: "role:dns_reconciler or ((role:member and project_id:%(project
 ```
 
 `all_tenants` lets Designate list zones and recordsets outside the credential's
-project. The recordset rules grant generated recordset management, but not zone
-create, update, delete, transfer, import, export, or managed-record editing.
+project. The `create_zone` rule is only required when
+`dns.create_missing_project_zones` is enabled. The recordset rules grant
+generated recordset management, but not zone update, delete, transfer, import,
+export, or managed-record editing.
 
 Apply the overrides with a focused reconfigure:
 
@@ -344,6 +373,7 @@ Do not use `--unrestricted`.
   {"service": "network", "method": "GET", "path": "/v2.0/floatingips/*"},
   {"service": "dns", "method": "GET", "path": "/v2/zones"},
   {"service": "dns", "method": "GET", "path": "/v2/zones/*"},
+  {"service": "dns", "method": "POST", "path": "/v2/zones"},
   {"service": "dns", "method": "GET", "path": "/v2/zones/*/recordsets"},
   {"service": "dns", "method": "GET", "path": "/v2/zones/*/recordsets/*"},
   {"service": "dns", "method": "POST", "path": "/v2/zones/*/recordsets"},
@@ -399,6 +429,20 @@ neutron_metadata:
 Set `dns.all_projects: true` so the reconciler requests all-project Designate
 zone and recordset discovery. Keep Neutron metadata writes disabled unless the
 credential is intentionally granted the corresponding Neutron update policies.
+
+For tenant-isolated generated zones that are visible to project members, use:
+
+```yaml
+dns:
+  base_domain: apps.example.net.
+  zone_strategy: per_project_zone
+  all_projects: true
+  create_missing_project_zones: true
+  project_zone_email: hostmaster@apps.example.net
+```
+
+The reconciler creates missing zones with `project_id` set to the floating IP
+owner project, then creates the generated FIP recordsets inside that zone.
 
 If your Designate deployment rejects the generated TXT ownership records, set:
 

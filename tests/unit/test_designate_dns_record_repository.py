@@ -1,11 +1,14 @@
 from dataclasses import dataclass, field
 from typing import Any
 
+import pytest
+
 from openstack_fip_dns_reconciler.domain.models.dns_name import DnsZoneName
 from openstack_fip_dns_reconciler.domain.models.dns_record import DnsRecordType, GeneratedDnsRecord
 from openstack_fip_dns_reconciler.domain.models.record_ownership import RecordOwnership
 from openstack_fip_dns_reconciler.domain.services.fqdn_builder import ZoneStrategy
 from openstack_fip_dns_reconciler.domain.services.ownership_parser import OwnershipParser
+from openstack_fip_dns_reconciler.infrastructure.exceptions import InfrastructureError
 from openstack_fip_dns_reconciler.infrastructure.openstack.designate_dns_record_repository import (
     OpenStackDesignateRecordRepository,
 )
@@ -18,6 +21,7 @@ class FakeDnsProxy:
     zones_calls: list[dict[str, Any]] = field(default_factory=list)
     recordsets_calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
     create_calls: list[tuple[dict[str, Any], dict[str, Any]]] = field(default_factory=list)
+    create_zone_calls: list[dict[str, Any]] = field(default_factory=list)
 
     def zones(self, **query: Any) -> list[dict[str, Any]]:
         self.zones_calls.append(query)
@@ -29,6 +33,16 @@ class FakeDnsProxy:
 
     def create_recordset(self, zone: dict[str, Any], **attrs: Any) -> None:
         self.create_calls.append((zone, attrs))
+
+    def create_zone(self, **attrs: Any) -> dict[str, Any]:
+        zone = {
+            "id": f"zone-{len(self.create_zone_calls) + 1}",
+            "name": attrs["name"],
+            "project_id": attrs["project_id"],
+        }
+        self.create_zone_calls.append(attrs)
+        self.zones_result.append(zone)
+        return zone
 
     def find_zone(self, name_or_id: str, ignore_missing: bool = True) -> None:
         raise AssertionError("find_zone must not be used by the Designate repository")
@@ -104,17 +118,72 @@ def test_default_designate_discovery_remains_project_scoped() -> None:
     assert dns.recordsets_calls == [("managed-zone", {})]
 
 
+def test_missing_per_project_zone_is_created_for_floating_ip_project() -> None:
+    dns = FakeDnsProxy(zones_result=[])
+    repository = _repository(
+        dns,
+        all_projects=True,
+        zone_strategy=ZoneStrategy.PER_PROJECT_ZONE,
+        create_missing_project_zones=True,
+        project_zone_email="hostmaster@apps.mustelinet.com",
+    )
+    record = _a_record(zone_name="8ab1c22f.apps.mustelinet.com.")
+
+    repository.create_record(record)
+
+    assert dns.create_zone_calls == [
+        {
+            "name": "8ab1c22f.apps.mustelinet.com.",
+            "email": "hostmaster@apps.mustelinet.com",
+            "type": "PRIMARY",
+            "ttl": 60,
+            "project_id": "8ab1c22f4d6e4f19a21c4d8f23bb912a",
+            "description": (
+                "Generated floating IP DNS zone for OpenStack project "
+                "8ab1c22f4d6e4f19a21c4d8f23bb912a"
+            ),
+        }
+    ]
+    assert dns.create_calls[0][0]["name"] == "8ab1c22f.apps.mustelinet.com."
+    assert dns.recordsets_calls == [
+        (
+            "zone-1",
+            {
+                "name": "x7k9m2q4pa.8ab1c22f.apps.mustelinet.com.",
+                "type": "A",
+                "all_projects": True,
+            },
+        )
+    ]
+
+
+def test_missing_zone_is_not_created_by_default() -> None:
+    dns = FakeDnsProxy(zones_result=[])
+    repository = _repository(dns, all_projects=True, zone_strategy=ZoneStrategy.PER_PROJECT_ZONE)
+    record = _a_record(zone_name="8ab1c22f.apps.mustelinet.com.")
+
+    with pytest.raises(InfrastructureError, match="Failed to create Designate record"):
+        repository.create_record(record)
+
+    assert dns.create_zone_calls == []
+
+
 def _repository(
     dns: FakeDnsProxy,
     *,
     all_projects: bool = False,
+    zone_strategy: ZoneStrategy = ZoneStrategy.SINGLE_ZONE,
+    create_missing_project_zones: bool = False,
+    project_zone_email: str | None = None,
 ) -> OpenStackDesignateRecordRepository:
     return OpenStackDesignateRecordRepository(
         connection=FakeConnection(dns),
         base_domain="apps.mustelinet.com.",
-        zone_strategy=ZoneStrategy.SINGLE_ZONE,
+        zone_strategy=zone_strategy,
         ownership_parser=OwnershipParser("openstack-fip-dns-reconciler"),
         all_projects=all_projects,
+        create_missing_project_zones=create_missing_project_zones,
+        project_zone_email=project_zone_email,
     )
 
 
@@ -126,13 +195,13 @@ def _ownership() -> RecordOwnership:
     )
 
 
-def _a_record() -> GeneratedDnsRecord:
+def _a_record(zone_name: str = "apps.mustelinet.com.") -> GeneratedDnsRecord:
     ownership = _ownership()
     return GeneratedDnsRecord(
         fqdn="x7k9m2q4pa.8ab1c22f.apps.mustelinet.com.",
         record_type=DnsRecordType.A,
         records=("10.50.0.42",),
-        zone_name=DnsZoneName("apps.mustelinet.com."),
+        zone_name=DnsZoneName(zone_name),
         ttl=60,
         project_id=ownership.project_id,
         ownership=ownership,

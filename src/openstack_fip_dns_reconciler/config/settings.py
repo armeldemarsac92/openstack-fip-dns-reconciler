@@ -1,7 +1,8 @@
 from enum import StrEnum
 from pathlib import Path
+from typing import Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ZoneStrategy(StrEnum):
@@ -37,6 +38,11 @@ class DnsSettings(BaseModel):
     base_domain: str
     zone_strategy: ZoneStrategy = ZoneStrategy.SINGLE_ZONE
     all_projects: bool = False
+    create_missing_project_zones: bool = False
+    project_zone_email: str | None = None
+    project_zone_description_template: str = (
+        "Generated floating IP DNS zone for OpenStack project {project_id}"
+    )
     ttl: int = Field(default=60, ge=1)
     label_length: int = Field(default=13, ge=1, le=63)
     label_encoding: LabelEncoding = LabelEncoding.BASE32
@@ -50,6 +56,31 @@ class DnsSettings(BaseModel):
         if not normalized:
             raise ValueError("base_domain must not be empty")
         return normalized if normalized.endswith(".") else f"{normalized}."
+
+    @field_validator("project_zone_email")
+    @classmethod
+    def normalize_project_zone_email(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("project_zone_email must not be empty when provided")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_project_zone_creation(self) -> Self:
+        if (
+            self.create_missing_project_zones
+            and self.zone_strategy != ZoneStrategy.PER_PROJECT_ZONE
+        ):
+            raise ValueError(
+                "zone_strategy must be per_project_zone when create_missing_project_zones is true"
+            )
+        if self.create_missing_project_zones and self.project_zone_email is None:
+            raise ValueError(
+                "project_zone_email is required when create_missing_project_zones is true"
+            )
+        return self
 
 
 class RecordsSettings(BaseModel):

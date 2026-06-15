@@ -19,12 +19,20 @@ class OpenStackDesignateRecordRepository:
         zone_strategy: ZoneStrategy,
         ownership_parser: OwnershipParser,
         all_projects: bool = False,
+        create_missing_project_zones: bool = False,
+        project_zone_email: str | None = None,
+        project_zone_description_template: str = (
+            "Generated floating IP DNS zone for OpenStack project {project_id}"
+        ),
     ) -> None:
         self._connection = connection
         self._base_domain = DnsZoneName(base_domain)
         self._zone_strategy = zone_strategy
         self._ownership_parser = ownership_parser
         self._all_projects = all_projects
+        self._create_missing_project_zones = create_missing_project_zones
+        self._project_zone_email = project_zone_email
+        self._project_zone_description_template = project_zone_description_template
 
     def list_managed_records(self) -> list[GeneratedDnsRecord]:
         try:
@@ -37,7 +45,7 @@ class OpenStackDesignateRecordRepository:
 
     def create_record(self, record: GeneratedDnsRecord) -> None:
         try:
-            zone = self._find_required_zone(record.zone_name.value)
+            zone = self._find_or_create_required_zone(record)
             existing = self._find_recordset(zone, record)
             if existing is not None:
                 self._update_existing_recordset(existing, record)
@@ -50,7 +58,7 @@ class OpenStackDesignateRecordRepository:
 
     def update_record(self, record: GeneratedDnsRecord) -> None:
         try:
-            zone = self._find_required_zone(record.zone_name.value)
+            zone = self._find_or_create_required_zone(record)
             existing = self._find_recordset(zone, record)
             if existing is None:
                 self._connection.dns.create_recordset(zone, **self._recordset_attrs(record))
@@ -165,11 +173,66 @@ class OpenStackDesignateRecordRepository:
         )
 
     def _find_required_zone(self, zone_name: str) -> Any:
+        zone = self._find_zone_from_managed_list(zone_name)
+        if zone is not None:
+            return zone
+        raise InfrastructureError(f"Designate zone not found: {zone_name}")
+
+    def _find_or_create_required_zone(self, record: GeneratedDnsRecord) -> Any:
+        zone = self._find_zone_from_managed_list(record.zone_name.value)
+        if zone is not None:
+            return zone
+        if not self._can_create_project_zone(record.zone_name.value):
+            raise InfrastructureError(f"Designate zone not found: {record.zone_name.value}")
+        return self._create_project_zone(record)
+
+    def _find_zone_from_managed_list(self, zone_name: str) -> Any | None:
         normalized_zone_name = _normalize_name(zone_name)
         for zone in self._managed_zones():
             if _normalize_name(_resource_value(zone, "name")) == normalized_zone_name:
                 return zone
-        raise InfrastructureError(f"Designate zone not found: {zone_name}")
+        return None
+
+    def _can_create_project_zone(self, zone_name: str) -> bool:
+        if not self._create_missing_project_zones:
+            return False
+        if self._zone_strategy != ZoneStrategy.PER_PROJECT_ZONE:
+            return False
+        if self._project_zone_email is None:
+            raise InfrastructureError(
+                "dns.project_zone_email is required when project zone creation is enabled"
+            )
+        normalized_zone_name = _normalize_name(zone_name)
+        return normalized_zone_name.endswith(f".{self._base_domain.value}")
+
+    def _create_project_zone(self, record: GeneratedDnsRecord) -> Any:
+        assert self._project_zone_email is not None
+        attrs = {
+            "name": record.zone_name.value,
+            "email": self._project_zone_email,
+            "type": "PRIMARY",
+            "ttl": record.ttl,
+            "project_id": record.project_id,
+            "description": self._project_zone_description_template.format(
+                project_id=record.project_id,
+                zone_name=record.zone_name.value,
+            ),
+        }
+        try:
+            zone = self._connection.dns.create_zone(**attrs)
+        except Exception:
+            existing_zone = self._find_zone_from_managed_list(record.zone_name.value)
+            if existing_zone is not None:
+                return existing_zone
+            raise
+        LOG.info(
+            "Created Designate project zone",
+            extra={
+                "zone_name": record.zone_name.value,
+                "project_id": record.project_id,
+            },
+        )
+        return zone
 
     def _find_recordset(self, zone: Any, record: GeneratedDnsRecord) -> Any | None:
         query = {
