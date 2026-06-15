@@ -16,15 +16,15 @@ Minimum checklist:
 4. For a single shared generated zone, share that zone with the `service`
    project.
 5. For tenant-isolated generated zones, enable per-project zone creation and
-   allow the reconciler to create generated zones with the floating IP owner
-   project as `project_id`.
+   allow the reconciler to use Designate sudo project creation for the floating
+   IP owner project.
 6. Create a restricted application credential for a `fip-dns-reconciler` user in
    the `service` project.
 7. Configure the reconciler with `dns.all_projects: true` and disable Neutron
    metadata writes unless the credential has explicit Neutron update policy.
 8. For tenant-isolated visibility, use `dns.zone_strategy: per_project_zone` and
    `dns.create_missing_project_zones: true`; the reconciler creates generated
-   zones with `project_id` set to the floating IP owner project.
+   zones with `X-Auth-Sudo-Project-ID` set to the floating IP owner project.
 9. Run a one-shot dry run, then start the persistent container.
 
 Avoid granting `update_floatingip` to the inventory role unless the deployment
@@ -40,12 +40,13 @@ dns:
   project_zone_email: hostmaster@apps.mustelinet.com
 ```
 
-In that mode, the reconciler creates each zone with `project_id` set to the
-floating IP owner project. Project members can read/list their generated records
-when Designate policy allows normal project members or readers to access
-project-owned zones. The service user also needs the generated-zone create rule;
-do not grant it update/delete rights for zones unless you intentionally add zone
-lifecycle management later.
+In that mode, the reconciler creates each zone with `X-Auth-Sudo-Project-ID`
+set to the floating IP owner project; the zone create JSON body does not contain
+`project_id`. Project members can read/list their generated records when
+Designate policy allows normal project members or readers to access
+project-owned zones. The service user also needs the generated-zone `create_zone`
+and `use_sudo` rules; do not grant it update/delete rights for zones unless you
+intentionally add zone lifecycle management later.
 
 Keep generated zones controller-written and tenant-readable. Do not rely on
 per-recordset read-only policy inside a tenant-writable zone.

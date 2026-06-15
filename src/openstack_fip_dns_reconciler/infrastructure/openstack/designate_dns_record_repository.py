@@ -212,14 +212,19 @@ class OpenStackDesignateRecordRepository:
             "email": self._project_zone_email,
             "type": "PRIMARY",
             "ttl": record.ttl,
-            "project_id": record.project_id,
             "description": self._project_zone_description_template.format(
                 project_id=record.project_id,
                 zone_name=record.zone_name.value,
             ),
         }
         try:
-            zone = self._connection.dns.create_zone(**attrs)
+            response = self._connection.dns.post(
+                "/zones",
+                json=attrs,
+                headers={"X-Auth-Sudo-Project-ID": record.project_id},
+                raise_exc=True,
+            )
+            zone = _response_json(response)
         except Exception:
             existing_zone = self._find_zone_from_managed_list(record.zone_name.value)
             if existing_zone is not None:
@@ -280,6 +285,12 @@ def _resource_value(resource: Any, name: str) -> Any:
     if isinstance(resource, dict):
         return resource.get(name)
     return getattr(resource, name, None)
+
+
+def _response_json(response: Any) -> Any:
+    if hasattr(response, "json"):
+        return response.json()
+    return response
 
 
 def _normalize_name(value: Any) -> str:

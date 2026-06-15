@@ -147,9 +147,11 @@ dns:
   project_zone_email: hostmaster@fip.internal.mycloud.net
 ```
 
-When it creates a project zone, the reconciler sets the Designate zone
-`project_id` to the floating IP owner project. That makes the zone live inside
-the tenant project, while the service credential still performs the write with
+When it creates a project zone, the reconciler sends a raw Designate zone create
+request with `X-Auth-Sudo-Project-ID` set to the floating IP owner project. The
+zone JSON body does not contain `project_id`, because Designate rejects that
+field in zone create payloads. The resulting zone lives inside the tenant
+project, while the service credential still performs the write with
 cross-project `dns_reconciler` permissions. Project members can list/read that
 zone when your Designate policy allows normal project members or readers to read
 project-owned zones.
@@ -284,9 +286,10 @@ openstack zone share create <generated-zone-id-or-name> <service-project-id>
 For tenant visibility without cross-tenant record listing, prefer per-project
 generated zones owned by each tenant project. With `zone_strategy:
 per_project_zone` and `create_missing_project_zones: true`, the reconciler
-creates missing generated zones with `project_id` set to the floating IP owner
-project. Project members can read/list their generated records when Designate
-policy allows normal project members or readers to read project-owned zones.
+creates missing generated zones by sending `X-Auth-Sudo-Project-ID` for the
+floating IP owner project. Project members can read/list their generated records
+when Designate policy allows normal project members or readers to read
+project-owned zones.
 
 Avoid promising per-recordset read-only behavior inside a tenant-writable shared
 zone. If tenants need custom DNS, give them separate tenant-managed zones.
@@ -317,6 +320,7 @@ get_zones: "role:dns_reconciler or role:admin or (role:reader and project_id:%(p
 find_zones: "role:dns_reconciler or role:admin or (role:reader and project_id:%(project_id)s)"
 get_zone: "role:dns_reconciler or role:admin or (role:reader and project_id:%(project_id)s) or ('True':%(zone_shared)s)"
 create_zone: "role:dns_reconciler or role:admin or (role:member and project_id:%(project_id)s)"
+use_sudo: "role:dns_reconciler or role:admin"
 
 get_recordsets: "role:dns_reconciler or role:admin or (role:reader and project_id:%(project_id)s)"
 get_recordset: "role:dns_reconciler or role:admin or (role:reader and project_id:%(project_id)s) or ('True':%(zone_shared)s)"
@@ -329,10 +333,11 @@ delete_recordset: "role:dns_reconciler or ((role:member and project_id:%(project
 ```
 
 `all_tenants` lets Designate list zones and recordsets outside the credential's
-project. The `create_zone` rule is only required when
-`dns.create_missing_project_zones` is enabled. The recordset rules grant
-generated recordset management, but not zone update, delete, transfer, import,
-export, or managed-record editing.
+project. The `create_zone` and `use_sudo` rules are only required when
+`dns.create_missing_project_zones` is enabled; `use_sudo` allows the service
+credential to create the generated zone inside the floating IP owner project.
+The recordset rules grant generated recordset management, but not zone update,
+delete, transfer, import, export, or managed-record editing.
 
 Apply the overrides with a focused reconfigure:
 
@@ -441,8 +446,9 @@ dns:
   project_zone_email: hostmaster@apps.example.net
 ```
 
-The reconciler creates missing zones with `project_id` set to the floating IP
-owner project, then creates the generated FIP recordsets inside that zone.
+The reconciler creates missing zones with `X-Auth-Sudo-Project-ID` set to the
+floating IP owner project, then creates the generated FIP recordsets inside that
+zone.
 
 If your Designate deployment rejects the generated TXT ownership records, set:
 

@@ -15,13 +15,21 @@ from openstack_fip_dns_reconciler.infrastructure.openstack.designate_dns_record_
 
 
 @dataclass
+class FakeResponse:
+    payload: dict[str, Any]
+
+    def json(self) -> dict[str, Any]:
+        return self.payload
+
+
+@dataclass
 class FakeDnsProxy:
     zones_result: list[dict[str, Any]]
     recordsets_by_zone: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     zones_calls: list[dict[str, Any]] = field(default_factory=list)
     recordsets_calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
     create_calls: list[tuple[dict[str, Any], dict[str, Any]]] = field(default_factory=list)
-    create_zone_calls: list[dict[str, Any]] = field(default_factory=list)
+    post_calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
 
     def zones(self, **query: Any) -> list[dict[str, Any]]:
         self.zones_calls.append(query)
@@ -34,15 +42,17 @@ class FakeDnsProxy:
     def create_recordset(self, zone: dict[str, Any], **attrs: Any) -> None:
         self.create_calls.append((zone, attrs))
 
-    def create_zone(self, **attrs: Any) -> dict[str, Any]:
+    def post(self, url: str, **kwargs: Any) -> FakeResponse:
+        attrs = kwargs["json"]
+        headers = kwargs["headers"]
         zone = {
-            "id": f"zone-{len(self.create_zone_calls) + 1}",
+            "id": f"zone-{len(self.post_calls) + 1}",
             "name": attrs["name"],
-            "project_id": attrs["project_id"],
+            "project_id": headers["X-Auth-Sudo-Project-ID"],
         }
-        self.create_zone_calls.append(attrs)
+        self.post_calls.append((url, kwargs))
         self.zones_result.append(zone)
-        return zone
+        return FakeResponse(zone)
 
     def find_zone(self, name_or_id: str, ignore_missing: bool = True) -> None:
         raise AssertionError("find_zone must not be used by the Designate repository")
@@ -131,19 +141,21 @@ def test_missing_per_project_zone_is_created_for_floating_ip_project() -> None:
 
     repository.create_record(record)
 
-    assert dns.create_zone_calls == [
-        {
-            "name": "8ab1c22f.apps.mustelinet.com.",
-            "email": "hostmaster@apps.mustelinet.com",
-            "type": "PRIMARY",
-            "ttl": 60,
-            "project_id": "8ab1c22f4d6e4f19a21c4d8f23bb912a",
-            "description": (
-                "Generated floating IP DNS zone for OpenStack project "
-                "8ab1c22f4d6e4f19a21c4d8f23bb912a"
-            ),
-        }
-    ]
+    assert len(dns.post_calls) == 1
+    url, kwargs = dns.post_calls[0]
+    assert url == "/zones"
+    assert kwargs["headers"] == {"X-Auth-Sudo-Project-ID": "8ab1c22f4d6e4f19a21c4d8f23bb912a"}
+    assert kwargs["raise_exc"] is True
+    assert kwargs["json"] == {
+        "name": "8ab1c22f.apps.mustelinet.com.",
+        "email": "hostmaster@apps.mustelinet.com",
+        "type": "PRIMARY",
+        "ttl": 60,
+        "description": (
+            "Generated floating IP DNS zone for OpenStack project 8ab1c22f4d6e4f19a21c4d8f23bb912a"
+        ),
+    }
+    assert "project_id" not in kwargs["json"]
     assert dns.create_calls[0][0]["name"] == "8ab1c22f.apps.mustelinet.com."
     assert dns.recordsets_calls == [
         (
@@ -165,7 +177,7 @@ def test_missing_zone_is_not_created_by_default() -> None:
     with pytest.raises(InfrastructureError, match="Failed to create Designate record"):
         repository.create_record(record)
 
-    assert dns.create_zone_calls == []
+    assert dns.post_calls == []
 
 
 def _repository(
